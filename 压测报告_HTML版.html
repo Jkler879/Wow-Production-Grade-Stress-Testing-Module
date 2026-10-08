@@ -1,0 +1,612 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
+<title>RAG 系统并发压测报告</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600;700&display=swap">
+<style>
+  /* 沿用数据飞轮 R3 报告的设计系统。版式：每节 = 一句结论 + 一张图 + 一张小表，细节收进折叠区 */
+  :root {
+    --bg:#0A0E1A; --surface:#111827; --surface-2:#1C2333; --surface-3:#242F44; --border:#2D3A52;
+    --text:#F0F4FF; --text-muted:#8896AD; --text-faint:#5B6880;
+    --accent:#6366F1; --accent-dim:rgba(99,102,241,0.15);
+    --good:#10B981; --good-dim:rgba(16,185,129,0.15);
+    --warn:#F59E0B; --warn-dim:rgba(245,158,11,0.15);
+    --bad:#EF4444;  --bad-dim:rgba(239,68,68,0.15);
+    --neutral:#64748B; --neutral-dim:rgba(100,116,139,0.15);
+    --mono:"IBM Plex Mono","PingFang SC","Microsoft YaHei",monospace;
+    --sans:"Inter","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    color-scheme:dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg:#F1F5FF; --surface:#FFFFFF; --surface-2:#F8FAFF; --surface-3:#EEF2FF; --border:#D1D9EF;
+      --text:#0F172A; --text-muted:#475569; --text-faint:#94A3B8;
+      --accent-dim:rgba(99,102,241,0.10); --good-dim:rgba(16,185,129,0.10); --warn-dim:rgba(245,158,11,0.10);
+      --bad-dim:rgba(239,68,68,0.10); --neutral-dim:rgba(100,116,139,0.10);
+      color-scheme:light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#F1F5FF; --surface:#FFFFFF; --surface-2:#F8FAFF; --surface-3:#EEF2FF; --border:#D1D9EF;
+    --text:#0F172A; --text-muted:#475569; --text-faint:#94A3B8;
+    --accent-dim:rgba(99,102,241,0.10); --good-dim:rgba(16,185,129,0.10); --warn-dim:rgba(245,158,11,0.10);
+    --bad-dim:rgba(239,68,68,0.10); --neutral-dim:rgba(100,116,139,0.10);
+    color-scheme:light;
+  }
+  :root[data-theme="dark"] { color-scheme:dark; }
+
+  *,*::before,*::after { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; line-height:1.6; -webkit-font-smoothing:antialiased; }
+  h1,h2,h3 { margin:0; text-wrap:balance; }
+  p { margin:0; }
+  table { border-collapse:collapse; width:100%; }
+  code { font-family:var(--mono); font-size:11.5px; background:var(--surface-3); padding:1px 5px; border-radius:4px; }
+
+  .page-wrap { max-width:1080px; margin:0 auto; padding:0 20px 60px; }
+  .hero { margin-top:24px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:28px 28px 24px; margin-bottom:16px; position:relative; overflow:hidden; }
+  .hero::after { content:''; position:absolute; right:-80px; top:-80px; width:280px; height:280px; border-radius:50%; background:radial-gradient(circle, var(--accent-dim), transparent 70%); pointer-events:none; }
+  .page-header { padding:0 0 22px; position:relative; z-index:1; }
+  .hero .metrics-grid { margin-bottom:0; position:relative; z-index:1; }
+  .hero .metric-tile { background:var(--surface-2); }
+  .header-sub { font-size:14px; color:var(--text-muted); margin-bottom:14px; max-width:70ch; }
+  .header-eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin-bottom:8px; }
+  .header-title { font-size:32px; font-weight:700; letter-spacing:-.01em; margin-bottom:12px; }
+  .header-meta { display:flex; flex-wrap:wrap; gap:8px 20px; }
+  .meta-chip { display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; color:var(--text-muted); }
+  .meta-chip .dot { width:6px; height:6px; border-radius:50%; background:var(--accent); flex-shrink:0; }
+
+  /* 指标卡 */
+  .metrics-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:16px; }
+  @media (max-width:860px){ .metrics-grid{ grid-template-columns:repeat(2,1fr); } }
+  @media (max-width:460px){ .metrics-grid{ grid-template-columns:1fr; } }
+  .metric-tile { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 16px 14px; position:relative; overflow:hidden; min-width:0; }
+  .metric-tile::before { content:''; position:absolute; inset:0 0 auto 0; height:3px; background:var(--good); }
+  .metric-tile.accent::before { background:var(--accent); }
+  .tile-label { font-size:12px; color:var(--text-muted); margin-bottom:8px; }
+  .tile-value { font-family:var(--mono); font-size:34px; font-weight:600; line-height:1.05; color:var(--good); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .metric-tile.accent .tile-value { color:var(--accent); }
+  .tile-value .unit { font-size:13px; color:var(--text-muted); font-weight:400; margin-left:3px; }
+  .tile-from { font-family:var(--mono); font-size:12px; color:var(--text-faint); margin-top:6px; }
+
+  .mon-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; position:relative; z-index:1; }
+  @media (max-width:960px){ .mon-grid{ grid-template-columns:repeat(2,1fr); } }
+  @media (max-width:520px){ .mon-grid{ grid-template-columns:1fr; } }
+  .mon-tile { background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:14px 14px 12px; min-width:0; position:relative; overflow:hidden; }
+  .mon-tile::before { content:''; position:absolute; inset:0 0 auto 0; height:3px; background:var(--accent); }
+  .mon-head { display:flex; flex-direction:column; gap:1px; margin-bottom:8px; }
+  .mon-name { font-family:var(--mono); font-size:13px; font-weight:600; letter-spacing:.06em; color:var(--accent); }
+  .mon-sub { font-size:11px; color:var(--text-faint); }
+  .mon-big { font-family:var(--mono); font-size:32px; font-weight:600; line-height:1.1; font-variant-numeric:tabular-nums; display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+  .mon-delta { font-size:13px; font-weight:600; color:var(--good); background:var(--good-dim); padding:1px 7px; border-radius:4px; }
+  .stages { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-top:12px; padding-top:10px; border-top:1px solid var(--border); }
+  .stages div { display:flex; flex-direction:column; gap:1px; min-width:0; }
+  .stages span { font-size:10.5px; color:var(--text-faint); white-space:nowrap; }
+  .stages b { font-family:var(--mono); font-size:14px; font-weight:600; }
+  .stages i { font-style:normal; font-family:var(--mono); font-size:10px; color:var(--text-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stages b.g{ color:var(--good); } .stages b.b{ color:var(--bad); } .stages b.w{ color:var(--warn); } .stages b.n{ color:var(--text); }
+  .outcomes { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-top:12px; position:relative; z-index:1; }
+  @media (max-width:960px){ .outcomes{ grid-template-columns:repeat(2,1fr); } }
+  .outcomes div { display:flex; flex-direction:column; gap:2px; padding:10px 14px; border-radius:10px; background:var(--good-dim); border:1px solid rgba(16,185,129,.28); min-width:0; }
+  .outcomes span { font-size:11px; color:var(--text-muted); }
+  .outcomes b { font-family:var(--mono); font-size:18px; font-weight:600; color:var(--good); }
+  .outcomes b.pend { color:var(--warn); }
+  .outcomes i { font-style:normal; font-size:11px; color:var(--text-faint); }
+  .row3 { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  @media (max-width:960px){ .row3{ grid-template-columns:1fr; } }
+  .row3>*{ min-width:0; }
+  .row3 .data-table td { white-space:normal; }
+  .row3 .data-table td:first-child, .row3 .data-table td:last-child { white-space:nowrap; }
+  .data-table.opt-table td { white-space:normal; font-family:var(--sans); font-size:12.5px; line-height:1.55; vertical-align:top; padding-top:10px; padding-bottom:10px; color:var(--text-muted); }
+  .data-table.opt-table td:first-child { white-space:nowrap; }
+  .data-table.opt-table td:nth-child(2) { color:var(--text); min-width:220px; }
+  .data-table.opt-table td:nth-child(3) { min-width:180px; }
+  .data-table.opt-table td:nth-child(4) { color:var(--good); min-width:200px; }
+  .sec-claim b { color:var(--text); }
+  .stepper { display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin:16px 0 0; }
+  @media (max-width:860px){ .stepper{ grid-template-columns:repeat(3,1fr); } }
+  @media (max-width:460px){ .stepper{ grid-template-columns:repeat(2,1fr); } }
+  .stepper a { display:flex; flex-direction:column; gap:2px; text-decoration:none; color:var(--text); font-size:13px; font-weight:600; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:9px 12px; min-width:0; }
+  .stepper a span { font-family:var(--mono); font-size:10.5px; font-weight:500; color:var(--accent); letter-spacing:.05em; }
+  .stepper a:hover, .stepper a:focus-visible { border-color:var(--accent); outline:none; }
+  .sec.sub { margin-top:36px; padding-left:16px; border-left:2px solid var(--border); }
+  .sec-tag.sub { color:var(--text-muted); background:var(--neutral-dim); }
+  .data-table.method-table td { white-space:normal; }
+  .data-table.method-table td:first-child, .data-table.method-table td:last-child { white-space:nowrap; }
+  .method-table a { color:var(--accent); text-decoration:none; font-family:var(--sans); font-weight:600; }
+  .method-table a:hover { text-decoration:underline; }
+  .lat { margin-bottom:16px; }
+  .lat-table { font-variant-numeric:tabular-nums; }
+  .lat-table th { text-align:right; font-size:11px; color:var(--text-muted); font-weight:600; padding:0 0 10px 14px; white-space:nowrap; line-height:1.35; vertical-align:bottom; }
+  .lat-table th span { font-weight:400; color:var(--text-faint); font-size:10.5px; }
+  .lat-table th:first-child { text-align:left; padding-left:0; }
+  .lat-table td { text-align:right; padding:10px 0 10px 14px; border-top:1px solid var(--border); font-family:var(--mono); font-size:20px; font-weight:600; white-space:nowrap; }
+  .lat-table td small { display:block; font-size:11px; font-weight:400; color:var(--text-faint); margin-top:1px; }
+  .lat-table td.m { text-align:left; padding-left:0; font-family:var(--sans); font-size:14px; font-weight:700; }
+  .lat-table td.m small { font-weight:400; color:var(--text-muted); }
+  .lat-table td.slo { font-size:13px; color:var(--text-muted); font-weight:500; }
+  .lat-table td.o { color:var(--good); } .lat-table td.x { color:var(--bad); } .lat-table td.n { color:var(--text); } .lat-table td.wv { color:var(--warn); }
+  .lat-note { font-size:12px; color:var(--text-muted); margin-top:10px; line-height:1.55; }
+  .verdict { background:var(--good-dim); border:1px solid rgba(16,185,129,.3); border-radius:10px; padding:14px 16px; display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  @media (max-width:760px){ .verdict{ grid-template-columns:1fr; } }
+  .verdict div { font-size:13px; line-height:1.6; min-width:0; padding-left:12px; border-left:2px solid rgba(16,185,129,.45); }
+  .verdict b { display:block; font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--good); margin-bottom:3px; }
+
+  /* 章节 */
+  .sec { margin-top:52px; }
+  .sec-head { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:6px; }
+  .sec-tag { font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--accent); background:var(--accent-dim); padding:2px 8px; border-radius:4px; }
+  .sec-title { font-size:20px; font-weight:700; letter-spacing:-.01em; }
+  .sec-claim { font-size:14.5px; line-height:1.65; color:var(--text); margin:10px 0 16px; padding:12px 16px; background:var(--surface); border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:8px; }
+  .sec-claim em { font-style:normal; font-family:var(--mono); font-weight:600; color:var(--good); }
+  .sec-claim em.a { color:var(--accent); } .sec-claim em.w { color:var(--warn); }
+
+  .row { display:grid; grid-template-columns:1.25fr 1fr; gap:16px; }
+  @media (max-width:820px){ .row{ grid-template-columns:1fr; } }
+  .row>*{ min-width:0; }
+  .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
+  .card-title { font-size:13px; font-weight:600; color:var(--text); margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; }
+  .card-title .sub { font-size:11px; font-weight:400; color:var(--text-faint); }
+  .chart-box { position:relative; height:280px; }
+
+  .data-table-wrap { overflow-x:auto; }
+  .data-table { font-family:var(--mono); font-size:12px; font-variant-numeric:tabular-nums; }
+  .data-table th { text-align:left; font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--text-faint); padding:0 12px 8px 0; font-weight:500; white-space:nowrap; }
+  .data-table td { padding:7px 12px 7px 0; border-top:1px solid var(--border); white-space:nowrap; }
+  .data-table tr.hl td { background:var(--accent-dim); }
+  .data-table td.t { font-family:var(--sans); font-weight:500; }
+  .g{ color:var(--good); } .b{ color:var(--bad); } .w{ color:var(--warn); } .f{ color:var(--text-faint); }
+
+  .tag { display:inline-block; font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:4px; white-space:nowrap; }
+  .tag-good{ background:var(--good-dim); color:var(--good); } .tag-bad{ background:var(--bad-dim); color:var(--bad); }
+  .tag-warn{ background:var(--warn-dim); color:var(--warn); } .tag-accent{ background:var(--accent-dim); color:var(--accent); }
+
+  .facts { list-style:none; margin:12px 0 0; padding:0; display:grid; gap:6px; }
+  .facts li { font-size:12.5px; color:var(--text-muted); padding-left:14px; position:relative; line-height:1.55; }
+  .facts li::before { content:''; position:absolute; left:0; top:8px; width:6px; height:6px; border-radius:50%; background:var(--accent); }
+  .facts b { color:var(--text); font-weight:600; }
+
+  .chips { display:flex; flex-wrap:wrap; gap:8px; }
+  .chip { display:flex; flex-direction:column; gap:2px; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; padding:8px 12px; min-width:0; }
+  .chip .k { font-size:11px; color:var(--text-muted); }
+  .chip .v { font-family:var(--mono); font-size:14px; font-weight:600; color:var(--good); white-space:nowrap; }
+
+  .note { font-size:12px; color:var(--text-muted); background:var(--warn-dim); border:1px solid rgba(245,158,11,.3); border-radius:8px; padding:10px 12px; margin-top:12px; line-height:1.55; }
+  .note b { color:var(--warn); }
+
+  details { background:var(--surface); border:1px solid var(--border); border-radius:10px; margin-top:12px; }
+  summary { cursor:pointer; padding:14px 18px; font-weight:600; font-size:14px; list-style:none; display:flex; justify-content:space-between; align-items:center; }
+  summary::-webkit-details-marker { display:none; }
+  summary::after { content:'展开'; font-family:var(--mono); font-size:11px; color:var(--accent); font-weight:500; }
+  details[open] summary::after { content:'收起'; }
+  summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:10px; }
+  .details-body { padding:0 18px 16px; display:grid; gap:14px; }
+  .kv { display:grid; grid-template-columns:96px 1fr; gap:6px 14px; font-size:12.5px; }
+  .kv dt { font-family:var(--mono); font-size:11px; color:var(--accent); padding-top:2px; }
+  .kv dd { margin:0; color:var(--text-muted); line-height:1.6; }
+  @media (max-width:520px){ .kv{ grid-template-columns:1fr; } .kv dd{ margin-bottom:6px; } }
+
+  .footnotes { margin-top:36px; padding-top:16px; border-top:1px solid var(--border); font-size:11px; color:var(--text-faint); font-family:var(--mono); line-height:1.7; }
+</style>
+
+<div class="page-wrap">
+
+  <div class="hero"><header class="page-header">
+    <div class="header-eyebrow">Load Test · RAG + ReAct Agent</div>
+    <h1 class="header-title">RAG 系统并发压测报告</h1>
+    <p class="header-sub">多轮会话 RAG + ReAct 系统的五步压测：① 基准获取 → ② 压测前优化 → ③ 压测执行（6 种方法）→ ④ 指标汇总 → ⑤ 参数调优。</p>
+    <div class="header-meta">
+      <span class="meta-chip"><span class="dot"></span>2026-10-07 → 10-09</span>
+      <span class="meta-chip"><span class="dot"></span>1×A10 · 8 核 · 单 worker</span>
+      <span class="meta-chip"><span class="dot"></span>主 LLM qwen3-30b-a3b</span>
+      <span class="meta-chip"><span class="dot"></span>多轮会话 · 约 2.2 万请求</span>
+      <span class="meta-chip"><span class="dot"></span>SLO：TTFE ≤ 5s · TTFT ≤ 8s · E2E ≤ 12s（P95）</span>
+    </div>
+  </header>
+
+  <div class="mon-grid">
+    <div class="mon-tile">
+      <div class="mon-head"><span class="mon-name">QPS</span><span class="mon-sub">吞吐 / goodput（小字）· req/s</span></div>
+      <div class="mon-big">3.03<span class="mon-delta">×2.5</span></div>
+      <div class="stages"><div><span>基线 40</span><b class="b">1.20</b><i>/ 0.003</i></div><div><span>优化后 40</span><b class="g">3.03</b><i>/ 2.65</i></div><div><span>稳定 30</span><b class="g">2.43</b><i>/ 2.34</i></div></div>
+    </div>
+    <div class="mon-tile">
+      <div class="mon-head"><span class="mon-name">TTFT</span><span class="mon-sub">首字延迟 P95 · 秒 · SLO ≤ 8</span></div>
+      <div class="mon-big">7.79<span class="mon-delta">−69%</span></div>
+      <div class="stages"><div><span>基线 40</span><b class="b">24.96</b><i>P50 19.97</i></div><div><span>优化后 40</span><b class="g">7.79</b><i>P50 6.03</i></div><div><span>稳定 30</span><b class="g">6.93</b><i>P50 5.53</i></div></div>
+    </div>
+    <div class="mon-tile">
+      <div class="mon-head"><span class="mon-name">ITL</span><span class="mon-sub">出字间隔 P95 · 秒（≈TPOT）</span></div>
+      <div class="mon-big">0.047<span class="mon-delta">−84%</span></div>
+      <div class="stages"><div><span>基线 40</span><b class="w">0.288</b><i>P50 0.108</i></div><div><span>优化后 40</span><b class="g">0.047</b><i>P50 0.045</i></div><div><span>稳定 30</span><b class="g">0.047</b><i>P50 0.045</i></div></div>
+    </div>
+    <div class="mon-tile">
+      <div class="mon-head"><span class="mon-name">GPU</span><span class="mon-sub">A10 平均利用率 · 显存恒定 18.5 / 24 GB</span></div>
+      <div class="mon-big">99.6%<span class="mon-delta up">用满</span></div>
+      <div class="stages"><div><span>基线 40</span><b class="n">77%</b><i>CPU 40%</i></div><div><span>优化后 40</span><b class="n">99.6%</b><i>CPU 83%</i></div><div><span>稳定 30</span><b class="n">92%</b><i>60 min 均值</i></div></div>
+    </div>
+  </div>
+  <div class="outcomes">
+    <div><span>稳定并发</span><b>30 会话</b><i>TTFE / TTFT / E2E P95 全部达标</i></div>
+    <div><span>突增 10 → 60 会话（6 倍）</span><b>goodput +79%</b><i>0 错误 · 30 秒内恢复</i></div>
+    <div><span>浸泡 30 会话 × 60 分钟</span><b>0 错误</b><i>8,805 请求 · 无泄漏</i></div>
+    <div id="tile-quality"><span>负载下质量</span><b class="pend">计算中</b><i>60 题 RAGAS vs R3</i></div>
+  </div>
+
+  </div>
+
+  <div class="verdict">
+    <div><b>优化</b>去掉阻塞事件循环的同步调用后，吞吐 ×2.5，稳定并发从不足 10 提到 30 会话。</div>
+    <div><b>稳定</b>准入控制扛住 6 倍流量冲击，30 秒内恢复；30 会话浸泡 60 分钟，8,805 请求零错误、无泄漏。</div>
+    <div><b>真实环境</b>接入百炼后瓶颈转到云端主模型，稳定并发约 8 会话；负载下回答质量不下降。</div>
+  </div>
+
+  <nav class="stepper" aria-label="压测步骤">
+    <a href="#s0"><span>准备</span>数据 · 档位 · SLO</a>
+    <a href="#s1"><span>第 1 步</span>基准获取</a>
+    <a href="#s2"><span>第 2 步</span>压测前优化</a>
+    <a href="#s3"><span>第 3 步</span>压测执行</a>
+    <a href="#s4"><span>第 4 步</span>指标汇总</a>
+    <a href="#s5"><span>第 5 步</span>参数调优</a>
+  </nav>
+
+  <!-- 设计 -->
+  <section class="sec" id="s0">
+    <div class="sec-head"><span class="sec-tag">准备</span><h2 class="sec-title">压测准备：压测数据 · 压测档位 · SLO 标准定义</h2></div>
+    <div class="row3">
+      <div class="card">
+        <div class="card-title">压测数据</div>
+        <ul class="facts">
+          <li><b>题库 245 题</b>，来自数据飞轮：R3 评估集 185 题（合成 QA 生成器从知识库 chunk 生成，带标准答案）+ R3 新合成 60 题</li>
+          <li><b>知识库</b>：Milvus，内容来自 Wizard of Wikipedia，161 个主题</li>
+          <li><b>多轮会话</b>：每会话 1–5 轮，同主题连续追问，轮间思考时间指数分布（均值 8 s）</li>
+          <li><b>主模型替身</b>按 R3 期间 364 次真实调用校准；3.5 切回真实百炼</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">压测档位</div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th>测试</th><th>档位</th><th>每档</th></tr>
+          <tr><td class="t">① 基线 / ② 回归</td><td>1 · 10 · 20 · 40</td><td>5 min</td></tr>
+          <tr><td class="t">3.1 并发阶梯</td><td>20–60 每 10</td><td>5 min</td></tr>
+          <tr><td class="t">3.2 恒定速率</td><td>0.6 · 0.9 会话/s</td><td>5 min</td></tr>
+          <tr><td class="t">3.3 突增</td><td>10 → 60 → 10</td><td>2 min</td></tr>
+          <tr><td class="t">3.4 浸泡</td><td>30</td><td>60 min</td></tr>
+          <tr><td class="t">3.5 真实模型</td><td>1 · 10 · 20</td><td>5/10 min</td></tr>
+        </table></div>
+        <ul class="facts">
+          <li><b>冷却：</b>档间停 60 s 清空在途与后台写入；每档到时不再发新请求，最多等 120 s 收尾</li>
+          <li><b>预热：</b>每轮先跑冒烟请求加载模型与连接；档位起点会话同时启动，存在瞬时峰值</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-title">SLO 标准定义</div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th>指标</th><th>无负载 P95</th><th>倍数</th><th>SLO</th><th>真实复核</th></tr>
+          <tr><td class="t">TTFE</td><td>4.10</td><td>×1.2</td><td class="g">5 s</td><td>4.5</td></tr>
+          <tr><td class="t">TTFT</td><td>5.67</td><td>×1.4</td><td class="g">8 s</td><td>9.4</td></tr>
+          <tr><td class="t">E2E</td><td>7.53</td><td>×1.6</td><td class="g">12 s</td><td>12.1</td></tr>
+        </table></div>
+        <ul class="facts">
+          <li>取优化后 1 会话的无负载 P95，越靠前的阶段倍数越严（首屏最敏感）</li>
+          <li>接入真实百炼后同法复核，差异 &lt; 20%，<b>SLO 不变</b></li>
+          <li>按同一 SLO 定档：替身环境稳定并发 <b>30</b>，真实环境约 <b>8</b>；准入 <b>20 / 0.5 s</b></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 第 1 步 -->
+  <section class="sec" id="s1">
+    <div class="sec-head"><span class="sec-tag">第 1 步</span><h2 class="sec-title">基准获取：改造前基线与瓶颈定位</h2></div>
+    <p class="sec-claim">改造前只有 1 会话达标，40 会话时 TTFT P95 达 <em class="w">25.0 s</em>、goodput 几乎为 <em class="w">0</em>。根因是<b>单 worker 事件循环被同步调用串行化</b>：各环节自身不慢，时间全耗在排队上。</p>
+    <div class="row">
+      <div class="card">
+        <div class="card-title">基线各档 <span class="sub">替身主模型 · 闭环多轮 · 各 5 分钟</span></div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th>会话</th><th>吞吐</th><th>goodput</th><th>TTFT P95</th><th>E2E P95</th><th>SLO</th></tr>
+          <tr><td>1</td><td>0.096</td><td>0.096</td><td>5.96</td><td>8.04</td><td><span class="tag tag-good">达标</span></td></tr>
+          <tr><td>10</td><td>0.744</td><td>0.623</td><td class="b">8.43</td><td>10.49</td><td><span class="tag tag-bad">✗</span></td></tr>
+          <tr><td>20</td><td>1.110</td><td>0.188</td><td class="b">12.73</td><td class="b">15.80</td><td><span class="tag tag-bad">✗</span></td></tr>
+          <tr class="hl"><td>40</td><td>1.196</td><td class="b">0.003</td><td class="b">24.96</td><td class="b">33.89</td><td><span class="tag tag-bad">✗</span></td></tr>
+        </table></div>
+        <ul class="facts"><li>吞吐在 20 会话后停在约 <b>1.2 req/s</b>，再加并发只会增加排队</li></ul>
+      </div>
+      <div class="card">
+        <div class="card-title">瓶颈证据</div>
+        <ul class="facts">
+          <li><b>4B 模型 running 始终 ≤ 1</b>：GPU 推理没有并行起来</li>
+          <li><b>app CPU 仅约 40%</b>：不是算力不够，而是单线程在等</li>
+          <li><b>ITL P95 0.288 s</b>，是正常值的 6 倍：连已经在输出的回答也被阻塞</li>
+          <li>同步调用：查询改写（约 0.4 s）、长期记忆 ONNX 嵌入、每请求 <code>lf.flush</code></li>
+          <li>附带隐患：1.7B 约 11% 抽取请求静默 400；TEI 连接池（10）打满；40 会话出现 2 个 500</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 优化 -->
+  <section class="sec" id="s2">
+    <div class="sec-head"><span class="sec-tag">第 2 步</span><h2 class="sec-title">压测前优化：事件循环去阻塞 · 线程池与连接池扩容 · 过载保护</h2></div>
+    <p class="sec-claim">针对第 1 步定位的根因，逐项去阻塞、扩线程池与连接池（P0 + P1），再加过载保护（P2）。优化后40 会话吞吐 <em>1.20 → 3.03 req/s</em>，TTFT P95 <em>25.0 → 7.8 s</em>，ITL P95 <em>0.288 → 0.047 s</em>。</p>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">优化清单 <span class="sub">问题 → 证据 → 做法</span></div>
+      <div class="data-table-wrap"><table class="data-table opt-table">
+        <tr><th>类别</th><th>问题</th><th>证据</th><th>做法</th></tr>
+        <tr class="hl"><td><span class="tag tag-accent">事件循环</span></td><td>查询改写（约 0.4 s）、长期记忆 ONNX 嵌入、每请求 <code>lf.flush</code> 在协程里同步执行，阻塞主线程</td><td>4B running ≤ 1；CPU 40%；ITL P95 0.288 s，连正在输出的回答也卡顿</td><td>改写、嵌入改为 <code>asyncio.to_thread</code>；flush 移到服务关闭时统一执行</td></tr>
+        <tr class="hl"><td><span class="tag tag-accent">线程池</span></td><td>LangGraph ToolNode 用 <code>run_in_executor</code> 把同步工具（检索器）放进默认线程池，8 核机器默认仅 <code>min(32, CPU+4)</code> = 12 线程</td><td>阶梯 60 会话时线程池实际用到 53 线程，是默认 12 的 4 倍多</td><td>lifespan 中把默认线程池设为 64，并在 <code>/metrics</code> 暴露线程数与排队</td></tr>
+        <tr class="hl"><td><span class="tag tag-accent">连接池</span></td><td>TEI / 判定器每次新建 requests 会话，连接池 10；vLLM 与 PG 连接池偏小</td><td>压测日志出现连接池打满告警</td><td>requests 连接池 64；httpx 64 / 32；PG 30 + 信号量</td></tr>
+        <tr><td><span class="tag tag-neutral">CPU 争抢</span></td><td>ONNX 嵌入默认占满所有核，与其他线程争抢</td><td>预防性调整：ONNX 线程与线程池线程叠加会超订 8 核</td><td><code>intra_op</code> 线程设为 2</td></tr>
+        <tr><td><span class="tag tag-neutral">静默失败</span></td><td>1.7B max-model-len 1024，长输入直接 400，代码未记录</td><td>约 11% 记忆抽取请求失败（113 次）</td><td>调到 2048，失败记 ERROR → 0 次</td></tr>
+        <tr><td><span class="tag tag-neutral">并发竞态</span></td><td>资源首请求时懒加载，并发下可能重复初始化</td><td>代码审查发现，P2 中修复</td><td>lifespan 预初始化，加锁 + 双重检查</td></tr>
+        <tr><td><span class="tag tag-neutral">过载保护</span></td><td>没有任何准入、隔离与超时手段</td><td>过载时所有请求一起变慢</td><td>准入控制、依赖舱壁、60 s 截止、10% 重试预算、<code>/metrics</code></td></tr>
+      </table></div>
+    </div>
+    <div class="row">
+      <div class="card"><div class="card-title">吞吐与 goodput <span class="sub">req/s · 实线吞吐 · 虚线 goodput</span></div><div class="chart-box"><canvas id="c-opt" role="img" aria-label="基线与优化后的吞吐和 goodput"></canvas></div></div>
+      <div class="card">
+        <div class="card-title">优化前后 <span class="sub">E2E · 秒</span></div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th>会话</th><th>E2E P50</th><th>E2E P95</th><th>SLO</th></tr>
+          <tr><td>10</td><td><span class="f">7.6 →</span> 6.2</td><td><span class="f">10.5 →</span> 7.9</td><td><span class="tag tag-good">✗ → ✓</span></td></tr>
+          <tr><td>20</td><td><span class="f">11.6 →</span> 6.6</td><td><span class="f">15.8 →</span> 8.3</td><td><span class="tag tag-good">✗ → ✓</span></td></tr>
+          <tr class="hl"><td>40</td><td><span class="f">25.6 →</span> <span class="g">7.5</span></td><td><span class="f">33.9 →</span> <span class="g">9.8</span></td><td><span class="tag tag-warn">仅 TTFE 超</span></td></tr>
+        </table></div>
+        <ul class="facts">
+          <li>优化后瓶颈转到 <b>GPU 算力</b>：40 会话 GPU 99.6%，4B 等待队列仍为 0，是三个模型共用一块 A10 抢算力</li>
+          <li>40 会话 <b>0 错误</b>；P2 回归无准入名额泄漏</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 第 3 步 -->
+  <section class="sec" id="s3">
+    <div class="sec-head"><span class="sec-tag">第 3 步</span><h2 class="sec-title">压测执行：6 种压测方法</h2></div>
+    <p class="sec-claim">3.1–3.4 在本地替身环境测<b>系统本身的容量与稳定性</b>；3.5–3.6 切回真实百炼，测<b>真实容量与回答质量</b>。</p>
+    <div class="card">
+      <div class="data-table-wrap"><table class="data-table method-table">
+        <tr><th>方法</th><th>做法</th><th>回答的问题</th><th>结论</th></tr>
+        <tr><td><a href="#m31">3.1 并发阶梯</a></td><td>闭环 20 → 60 会话，准入关闭</td><td>容量上限与拐点</td><td class="g">稳定并发 30 · 拐点 40</td></tr>
+        <tr><td><a href="#m31">3.2 恒定速率</a></td><td>开环，泊松到达 0.6 / 0.9 会话/s</td><td>给定流量能否达标</td><td class="g">2.4 req/s 达标</td></tr>
+        <tr><td><a href="#m33">3.3 突增</a></td><td>10 → 60 → 10 会话，准入开启</td><td>冲击下是否稳定</td><td class="g">0 错误 · goodput +79%</td></tr>
+        <tr><td><a href="#m34">3.4 浸泡</a></td><td>30 会话持续 60 分钟</td><td>泄漏与性能退化</td><td class="g">0 错误 · 无泄漏</td></tr>
+        <tr><td><a href="#m35">3.5 真实模型</a></td><td>切回百炼，1 / 10 / 20 会话</td><td>替身是否可信、真实容量</td><td class="w">真实稳定并发约 8</td></tr>
+        <tr><td><a href="#m36">3.6 负载下质量</a></td><td>20 会话负载中重答 60 题，离线 RAGAS</td><td>高负载是否降低质量</td><td id="m36-verdict" class="w">计算中</td></tr>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 容量 -->
+  <section class="sec sub" id="m31">
+    <div class="sec-head"><span class="sec-tag sub">3.1 · 3.2</span><h2 class="sec-title">并发阶梯 + 恒定速率：稳定并发 30 会话，goodput 拐点 40 会话</h2></div>
+    <p class="sec-claim">吞吐一直涨到 60 会话，但 goodput 在 <em class="a">40 会话见顶</em> 后下降。三项 SLO 全部达标的稳定并发是 <em>30 会话</em>。</p>
+    <div class="row">
+      <div class="card"><div class="card-title">吞吐 vs goodput <span class="sub">req/s · 准入关闭</span></div><div class="chart-box"><canvas id="c-ladder" role="img" aria-label="阶梯测试吞吐与 goodput"></canvas></div></div>
+      <div class="card">
+        <div class="card-title">各档 P95 <span class="sub">秒</span></div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th>会话</th><th>TTFE</th><th>TTFT</th><th>E2E</th><th>GPU</th><th>SLO</th></tr>
+          <tr><td>20</td><td>4.41</td><td>6.37</td><td>8.27</td><td>74%</td><td><span class="tag tag-good">达标</span></td></tr>
+          <tr class="hl"><td>30</td><td>4.89</td><td>6.90</td><td>8.86</td><td>96%</td><td><span class="tag tag-good">稳定并发</span></td></tr>
+          <tr><td>40</td><td class="b">5.34</td><td>7.52</td><td>9.48</td><td>96%</td><td><span class="tag tag-warn">拐点</span></td></tr>
+          <tr><td>50</td><td class="b">6.04</td><td class="b">8.61</td><td>10.57</td><td>100%</td><td><span class="tag tag-bad">✗</span></td></tr>
+          <tr><td>60</td><td class="b">7.12</td><td class="b">10.02</td><td class="b">12.01</td><td>100%</td><td><span class="tag tag-bad">✗</span></td></tr>
+        </table></div>
+        <ul class="facts">
+          <li><b>瓶颈：</b>GPU 算力（4B、1.7B、TEI 共用一块 A10），其次是单 worker 的 Python CPU</li>
+          <li><b>开环恒定速率：</b>2.4 req/s 下仍达标，与闭环结论一致</li>
+          <li>60 会话仍 <b>0 错误</b>，内存无增长</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 抗冲击 -->
+  <section class="sec sub" id="m33">
+    <div class="sec-head"><span class="sec-tag sub">3.3</span><h2 class="sec-title">突增测试：10 → 60 → 10 会话（6 倍流量冲击）</h2></div>
+    <p class="sec-claim">准入控制削掉超出容量的请求，留下的请求服务得更好：goodput <em>1.41 → 2.52 req/s</em>，<em>0 个非准入错误</em>，回落后 30 秒内恢复。</p>
+    <div class="row">
+      <div class="card"><div class="card-title">放行请求 TTFE P95 <span class="sub">30 秒窗口 · 柱为被拒请求数</span></div><div class="chart-box"><canvas id="c-spike" role="img" aria-label="两组准入参数在突增期间的 TTFE P95 与拒绝数"></canvas></div></div>
+      <div class="card">
+        <div class="card-title">60 会话冲击期 <span class="sub">在途上限 / 排队超时</span></div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th></th><th>无准入</th><th>24 / 1.0s</th><th>20 / 0.5s</th></tr>
+          <tr><td class="t">放行 TTFE P95</td><td class="b">7.12</td><td class="w">6.01</td><td class="w">5.25</td></tr>
+          <tr><td class="t">放行请求达标</td><td>36%</td><td>69%</td><td class="g">90%</td></tr>
+          <tr><td class="t">拒绝率</td><td>0</td><td>47%</td><td>62%</td></tr>
+          <tr><td class="t">拒绝响应</td><td class="f">—</td><td>1.0 s</td><td class="g">0.5 s</td></tr>
+          <tr class="hl"><td class="t">goodput</td><td>1.41</td><td>2.25</td><td class="g">2.52</td></tr>
+        </table></div>
+        <ul class="facts">
+          <li>两组参数对比后，<b>定稿 20 / 0.5 s</b>：放行延迟更低，被拒请求更快得到答复</li>
+          <li>冲击后第一个 30 秒窗口即回到冲击前水平，无积压</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 稳定性 -->
+  <section class="sec sub" id="m34">
+    <div class="sec-head"><span class="sec-tag sub">3.4</span><h2 class="sec-title">浸泡测试：30 会话持续运行 60 分钟</h2></div>
+    <p class="sec-claim">8,805 个请求 <em>0 错误</em>，SLO 全程达标，延迟不随时间变慢，资源无泄漏。</p>
+    <div class="row">
+      <div class="card"><div class="card-title">每 10 分钟延迟 P95 <span class="sub">秒</span></div><div class="chart-box"><canvas id="c-soak" role="img" aria-label="浸泡测试每 10 分钟延迟 P95"></canvas></div></div>
+      <div class="card">
+        <div class="card-title">稳定性检查</div>
+        <div class="chips">
+          <div class="chip"><span class="k">错误</span><span class="v">0</span></div>
+          <div class="chip"><span class="k">达标率</span><span class="v">96.1%</span></div>
+          <div class="chip"><span class="k">app 内存</span><span class="v">1290 → 1282 MB</span></div>
+          <div class="chip"><span class="k">线程数</span><span class="v">恒 25</span></div>
+          <div class="chip"><span class="k">结束后在途</span><span class="v">0</span></div>
+          <div class="chip"><span class="k">舱壁拒绝</span><span class="v">0</span></div>
+        </div>
+        <ul class="facts">
+          <li>与 5 分钟阶梯 30 会话结果几乎一致（TTFE P95 4.90 vs 4.89），<b>短测能代表长期</b></li>
+        </ul>
+        <div class="note"><b>事故：</b>首次浸泡在第 26 分钟因系统盘写满中断（ClickHouse 系统日志）。先打快照，再在线扩容 50 GB 后完整重跑。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 真实环境 -->
+  <section class="sec sub" id="m35">
+    <div class="sec-head"><span class="sec-tag sub">3.5</span><h2 class="sec-title">真实模型验证：主模型从本地替身切回阿里云百炼 qwen3-30b-a3b</h2></div>
+    <p class="sec-claim">真实主模型对并发敏感：1 → 10 会话 TTFT P95 <em class="w">+28%</em>（替身仅 +4%）。真实环境稳定并发约 <em class="w">8 会话</em>，瓶颈从本地 GPU 转到云端。</p>
+    <div class="row">
+      <div class="card"><div class="card-title">TTFT P95：替身 vs 真实 <span class="sub">秒 · 虚线 SLO 8 s</span></div><div class="chart-box"><canvas id="c-real" role="img" aria-label="替身与真实模型的 TTFT P95"></canvas></div></div>
+      <div class="card">
+        <div class="card-title">真实环境 <span class="sub">P95 · 秒</span></div>
+        <div class="data-table-wrap"><table class="data-table">
+          <tr><th>会话</th><th>TTFE</th><th>TTFT</th><th>E2E</th><th>达标率</th><th>SLO</th></tr>
+          <tr><td>1</td><td>3.73</td><td>6.69</td><td>7.57</td><td>100%</td><td><span class="tag tag-good">达标</span></td></tr>
+          <tr class="hl"><td>10</td><td class="b">5.05</td><td class="b">8.58</td><td>9.42</td><td>88%</td><td><span class="tag tag-warn">略超</span></td></tr>
+          <tr><td>20</td><td class="b">5.75</td><td class="b">9.35</td><td>10.29</td><td>73%</td><td><span class="tag tag-bad">✗</span></td></tr>
+        </table></div>
+        <ul class="facts">
+          <li>966 个请求中系统自身错误 <b>0</b>（2 个为百炼内容安全拦截）</li>
+          <li>SLO 用真实无负载数据复核为 4.5 / 9.4 / 12.1 s，与现行相差 &lt; 20%，<b>保持不变</b></li>
+          <li>替身测出的 30 会话是<b>本地链路容量</b>，不是真实环境容量</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 质量 -->
+  <section class="sec sub" id="m36">
+    <div class="sec-head"><span class="sec-tag sub">3.6</span><h2 class="sec-title">负载下回答质量：60 题 RAGAS 与 R3 无负载对比</h2></div>
+    <p class="sec-claim">真实 20 会话负载中重答 60 道 R3 评估题（简单 31 / 推理 24 / 多跳 5），同一评判模型离线 RAGAS，与 R3 无负载同题对比。</p>
+    <div class="card">
+      <div class="data-table-wrap"><table class="data-table" id="ragas-table">
+        <tr><th>指标</th><th>R3 同题</th><th>负载下</th><th>变化</th></tr>
+        <tr><td class="t">Faithfulness</td><td>0.723</td><td><span class="tag tag-warn">计算中</span></td><td></td></tr>
+        <tr><td class="t">Answer Relevancy</td><td>0.829</td><td><span class="tag tag-warn">计算中</span></td><td></td></tr>
+        <tr><td class="t">Context Precision</td><td>0.956</td><td><span class="tag tag-warn">计算中</span></td><td></td></tr>
+        <tr><td class="t">Context Recall</td><td>0.900</td><td><span class="tag tag-warn">计算中</span></td><td></td></tr>
+        <tr><td class="t">Answer Correctness</td><td>0.634</td><td><span class="tag tag-warn">计算中</span></td><td></td></tr>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 第 4 步 -->
+  <section class="sec" id="s4">
+    <div class="sec-head"><span class="sec-tag">第 4 步</span><h2 class="sec-title">压测指标汇总：延迟 · 容量 · 错误 · 资源</h2></div>
+  <div class="lat card">
+    <div class="card-title">关键延迟 <span class="sub">大字 P95 · 小字 P50 · 单位秒 · 绿色达标 · 红色超标 · 橙色异常</span></div>
+    <div class="data-table-wrap"><table class="lat-table">
+      <tr><th></th><th>SLO（P95）</th><th>基线<br><span>40 会话</span></th><th>优化后<br><span>40 会话</span></th><th>稳定并发<br><span>30 会话 · 浸泡 60 min</span></th><th>真实百炼<br><span>10 会话</span></th></tr>
+      <tr><td class="m">TTFE<small>首个事件</small></td><td class="slo">≤ 5</td><td class="x">20.33<small>13.13</small></td><td class="x">5.54<small>4.02</small></td><td class="o">4.90<small>3.65</small></td><td class="x">5.05<small>3.69</small></td></tr>
+      <tr><td class="m">TTFT<small>首个答案字</small></td><td class="slo">≤ 8</td><td class="x">24.96<small>19.97</small></td><td class="o">7.79<small>6.03</small></td><td class="o">6.93<small>5.53</small></td><td class="x">8.58<small>5.99</small></td></tr>
+      <tr><td class="m">E2E<small>端到端</small></td><td class="slo">≤ 12</td><td class="x">33.89<small>25.56</small></td><td class="o">9.81<small>7.54</small></td><td class="o">8.86<small>7.04</small></td><td class="o">9.42<small>6.65</small></td></tr>
+      <tr><td class="m">ITL<small>出字间隔</small></td><td class="slo">—</td><td class="wv">0.288<small>0.108</small></td><td class="n">0.047<small>0.045</small></td><td class="n">0.047<small>0.045</small></td><td class="n">0.036<small>0.028</small></td></tr>
+    </table></div>
+    <p class="lat-note">基线的出字间隔 P95 是正常值的 6 倍：事件循环被阻塞时，连已经在输出的回答也会卡顿。替身出字间隔固定为约 0.045 s，真实模型约 0.028 s。</p>
+  </div>
+
+    <div class="card">
+      <div class="card-title">容量 · 错误 · 资源</div>
+      <div class="data-table-wrap"><table class="data-table">
+        <tr><th>指标</th><th>结果</th><th>说明</th></tr>
+        <tr><td class="t">稳定并发</td><td class="g">30 会话（替身）· 约 8（真实）</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">三项 P95 全部达标的最大档位</td></tr>
+        <tr><td class="t">goodput 峰值</td><td>2.68 req/s @ 40 会话</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">之后吞吐继续上涨，goodput 下降</td></tr>
+        <tr><td class="t">系统错误</td><td class="g">0</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">优化后各轮；另有准入 503（主动拒绝）、2 次百炼内容审核拦截、1 次空答案</td></tr>
+        <tr><td class="t">GPU / 显存</td><td>96–100% · 18.5 / 24 GB</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">30 会话起 GPU 用满；显存由 vLLM 预分配，恒定</td></tr>
+        <tr><td class="t">内存 / 线程</td><td class="g">无增长</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">浸泡 60 分钟 1290 → 1282 MB，线程恒 25</td></tr>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 定参 -->
+  <section class="sec" id="s5">
+    <div class="sec-head"><span class="sec-tag">第 5 步</span><h2 class="sec-title">参数调优：用压测数据确定准入、舱壁与重试参数</h2></div>
+    <div class="card">
+      <div class="data-table-wrap"><table class="data-table">
+        <tr><th>参数</th><th>原值</th><th>定稿</th><th>依据</th></tr>
+        <tr class="hl"><td class="t">准入在途上限</td><td>30</td><td class="g">20</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">阶梯拐点给出 24，突增对比 20 更优；真实环境在途仅 5–6，只在过载时生效</td></tr>
+        <tr class="hl"><td class="t">准入排队超时</td><td>2.0 s</td><td class="g">0.5 s</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">排队计入 TTFE；被拒请求 0.5 s 内得到答复</td></tr>
+        <tr><td class="t">依赖舱壁</td><td>无</td><td>12 / 6 / 2 / 16</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">改写 / 判定 / 后台 / TEI，前三项合计 = 4B 并发上限；全程拒绝 0</td></tr>
+        <tr><td class="t">重试（改写 / 主 LLM）</td><td>3 / 2</td><td>2 / 1</td><td class="t" style="font-weight:400;color:var(--text-muted);white-space:normal">重试放大过载流量；另加 10% 重试预算</td></tr>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- 折叠：方法与局限 -->
+  <section class="sec">
+    <details>
+      <summary>局限与下一步</summary>
+      <div class="details-body">
+        <dl class="kv">
+          <dt>替身</dt><dd>参数来自单轮数据，不随并发变慢、不返回 429；已用真实模型对照量化偏差。</dd>
+          <dt>单卡</dt><dd>三个本地模型共用一块 A10，结论只适用于单卡部署。</dd>
+          <dt>保守</dt><dd>压测关闭缓存，线上命中缓存的请求不走主模型，实际容量更高。</dd>
+          <dt>下一步</dt><dd>开启缓存、主模型预留吞吐、提前推送阶段事件降低 TTFE；嵌入上 GPU、多 worker；ClickHouse 日志设保留期。</dd>
+        </dl>
+      </div>
+    </details>
+  </section>
+
+  <div class="footnotes">数据：loadtest/results/ 各轮 requests.jsonl / summary.json 与监控 CSV · 过程记录：loadtest/LOADTEST_LOG.md</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script>
+(function(){
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const charts = [];
+  const D = {
+    optX:[1,10,20,40], baseThr:[0.096,0.744,1.11,1.196], baseGood:[0.096,0.623,0.188,0.003],
+    optThr:[0.093,0.855,1.576,3.028], optGood:[0.093,0.851,1.558,2.645],
+    lX:[20,30,40,50,60], lThr:[1.584,2.304,2.979,3.456,3.874], lGood:[1.578,2.214,2.680,2.416,1.410],
+    spX:['0:00','0:30','1:00','1:30','2:00','2:30','3:00','3:30','4:00','4:30','5:00','5:30'],
+    sp24:[4.31,4.01,4.16,4.35,5.89,6.21,5.84,5.99,4.46,4.12,4.22,4.23], sp20:[4.24,4.24,3.81,4.13,5.21,5.37,5.11,5.25,4.07,3.96,4.25,4.14],
+    rj24:[0,0,0,0,102,80,70,95,0,0,0,0], rj20:[0,0,0,0,159,134,96,155,0,0,0,0],
+    soX:['0–10','10–20','20–30','30–40','40–50','50–60'],
+    soTTFE:[4.82,4.93,4.96,4.90,4.85,4.88], soTTFT:[6.87,6.94,7.01,6.87,6.92,6.97], soE2E:[8.78,8.95,8.88,8.83,8.94,8.77],
+    rX:[1,10,20], mTTFT:[5.67,5.91,6.37], rTTFT:[6.69,8.58,9.35]
+  };
+  const alpha = (hex,a) => hex + Math.round(a*255).toString(16).padStart(2,'0');
+  function opts(xTitle, yTitle){
+    const muted=css('--text-muted'), faint=css('--text-faint'), border=css('--border');
+    const tick={color:muted, font:{family:'IBM Plex Mono', size:11}};
+    return {responsive:true, maintainAspectRatio:false, animation:false, interaction:{mode:'index', intersect:false},
+      plugins:{legend:{position:'bottom', labels:{color:muted, boxWidth:14, boxHeight:2, font:{size:11}, filter:i=>!!i.text}},
+        tooltip:{backgroundColor:css('--surface-2'), titleColor:css('--text'), bodyColor:css('--text-muted'), borderColor:border, borderWidth:1, padding:10, filter:i=>!!i.dataset.label}},
+      scales:{x:{type:'linear', title:{display:!!xTitle, text:xTitle, color:faint, font:{size:11}}, ticks:tick, grid:{display:false}, border:{color:border}},
+              y:{beginAtZero:true, title:{display:!!yTitle, text:yTitle, color:faint, font:{size:11}}, ticks:Object.assign({maxTicksLimit:7}, tick), grid:{color:alpha(border,.6)}, border:{display:false}}}};
+  }
+  const cat = (o, title) => { o.scales.x={type:'category', title:{display:!!title, text:title, color:css('--text-faint'), font:{size:11}}, ticks:{color:css('--text-muted'), font:{family:'IBM Plex Mono', size:11}}, grid:{display:false}, border:{color:css('--border')}}; return o; };
+  const pts = (xs, ys) => xs.map((x,i)=>({x, y:ys[i]}));
+  function line(label, data, color, dash){
+    return {type:'line', label, data, borderColor:color, backgroundColor:color, borderWidth:2.5, pointRadius:4, pointHoverRadius:6,
+      pointBorderColor:css('--surface'), pointBorderWidth:2, borderDash:dash||[], tension:0};
+  }
+  function area(label, data, color){
+    return Object.assign(line(label, data, color), {fill:'origin', backgroundColor:alpha(color,.12), pointBackgroundColor:color});
+  }
+  const ref = (label, data) => ({type:'line', label, data, borderColor:css('--neutral'), borderWidth:1.5, borderDash:[5,4], pointRadius:0, pointHoverRadius:0});
+  function mk(id, cfg){ const el=document.getElementById(id); if(el) charts.push(new Chart(el, cfg)); }
+  function build(){
+    charts.splice(0).forEach(c=>c.destroy());
+    const A=css('--accent'), N=css('--neutral'), G=css('--good'), W=css('--warn');
+    let o=opts('同时在线会话数','req/s'); o.scales.x.ticks.stepSize=10;
+    mk('c-opt',{type:'line', data:{datasets:[line('基线 吞吐',pts(D.optX,D.baseThr),N), line('基线 goodput',pts(D.optX,D.baseGood),N,[6,4]),
+      area('优化后 吞吐',pts(D.optX,D.optThr),A), line('优化后 goodput',pts(D.optX,D.optGood),A,[6,4])]}, options:o});
+    o=opts('同时在线会话数','req/s'); Object.assign(o.scales.x,{min:15,max:65}); o.scales.x.ticks.stepSize=10;
+    mk('c-ladder',{type:'line', data:{datasets:[line('吞吐',pts(D.lX,D.lThr),N), area('goodput',pts(D.lX,D.lGood),A)]}, options:o});
+    o=cat(opts('','秒'),''); Object.assign(o.scales.y,{min:0,max:8});
+    o.scales.y2={position:'right', beginAtZero:true, max:400, grid:{display:false}, border:{display:false}, title:{display:true, text:'拒绝数', color:css('--text-faint'), font:{size:11}}, ticks:{color:css('--text-faint'), font:{family:'IBM Plex Mono', size:11}}};
+    mk('c-spike',{data:{labels:D.spX, datasets:[
+      line('TTFE · 24 / 1.0s',D.sp24,W), line('TTFE · 20 / 0.5s',D.sp20,A), ref('SLO 5s',D.spX.map(()=>5)),
+      {type:'bar', label:'拒绝数 · 24 / 1.0s', data:D.rj24, yAxisID:'y2', backgroundColor:alpha(W,.25), borderRadius:3},
+      {type:'bar', label:'拒绝数 · 20 / 0.5s', data:D.rj20, yAxisID:'y2', backgroundColor:alpha(A,.25), borderRadius:3}]}, options:o});
+    o=cat(opts('','秒'),'运行时间（分钟）');
+    mk('c-soak',{type:'line', data:{labels:D.soX, datasets:[line('TTFE',D.soTTFE,A), line('TTFT',D.soTTFT,W), line('E2E',D.soE2E,G)]}, options:o});
+    o=opts('同时在线会话数','秒'); o.scales.x.ticks.stepSize=5;
+    mk('c-real',{type:'line', data:{datasets:[line('替身',pts(D.rX,D.mTTFT),A), area('真实百炼',pts(D.rX,D.rTTFT),W), ref('SLO 8s',[{x:1,y:8},{x:20,y:8}])]}, options:o});
+  }
+  function start(){ if(!window.Chart) return; Chart.defaults.font.family='Inter, "PingFang SC", "Microsoft YaHei", sans-serif'; build(); }
+  start();
+  try{ matchMedia('(prefers-color-scheme: light)').addEventListener('change', start); }catch(e){}
+  new MutationObserver(start).observe(document.documentElement,{attributes:true, attributeFilter:['data-theme']});
+})();
+</script>
+</body></html>
