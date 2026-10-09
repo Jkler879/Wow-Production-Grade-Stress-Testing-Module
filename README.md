@@ -10,9 +10,9 @@
   3. **过载保护**：流量突增、长时间运行时系统是否稳定？限流、准入、舱壁等参数该设多少？
 
 
-**服务器配置**：阿里云 ECS | 8 vCPU·29 GB 内存 | 1 ×NVIDIA A10 24 GB | Docker Compose 单 uvicorn worker
+**服务器配置**：阿里云 ECS  |  8 vCPU·29 GB 内存  |  1 ×NVIDIA A10 24 GB  |  Docker Compose 单 uvicorn worker
 
-**主模型 API**：阿里云百炼 qwen3-30b-a3b ·RPM 600 ·TPM 1,000,000（按 token 估算，约 40 个在途请求就会先触达 TPM 上限）
+**主模型 API**：阿里云百炼 qwen3-30b-a3b  |  RPM 600 ·TPM 1,000,000（30 会话实测 1.54 req/s，未触发 API 限流）
 
 
 ## 📊 **核心指标**
