@@ -97,6 +97,7 @@
 > **根因**：单 worker 事件循环被同步调用串行化，查询改写为串行调用，长期记忆 embedding 行为为串行调用。
 
 <img src="baseline_端到端延迟P50P95.png" alt="改造前基线：端到端延迟 P50 / P95" width="400">     <img src="baseline_吞吐量.png" alt="改造前基线：吞吐量" width="400">
+
 ---
 
 ## 🔧 第 2 步：压测前 —— 后端优化
