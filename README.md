@@ -82,11 +82,9 @@
 
 > 改造前只有 1 会话达标，40 会话时 TTFT P95 达 **25.0 s**、goodput 几乎为 **0**。
 
-> **根因**：单 worker 事件循环被同步调用串行化，查询改写模块串行调用，长期记忆模块embedding行为串行调用。
+> **根因**：单 worker 事件循环被同步调用串行化，查询改写为串行调用，长期记忆embedding行为为串行调用。
 
-<img src="baseline_端到端延迟P50P95.png" alt="改造前基线：端到端延迟 P50 / P95" width="560">
-
-<img src="baseline_吞吐量.png" alt="改造前基线：吞吐量" width="560">
+<img src="baseline_端到端延迟P50P95.png" alt="改造前基线：端到端延迟 P50 / P95" width="400">     <img src="baseline_吞吐量.png" alt="改造前基线：吞吐量" width="400">
 ---
 
 ## 第 2 步：压测前优化 —— 事件循环去阻塞 · 线程池与连接池扩容 · 过载保护
