@@ -1,4 +1,4 @@
-# WOW-ReAct-Agent 系统并发压测项目：
+# WOW-ReAct-Agent 系统并发压测项目
 
 **多轮会话 RAG + ReAct Agent 系统的生产级压测模块：**
 
