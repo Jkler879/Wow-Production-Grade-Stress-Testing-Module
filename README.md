@@ -24,6 +24,7 @@
 
 **主模型 API**：阿里云百炼 qwen3-30b-a3b  |  RPM 600 ·TPM 1,000,000（30 会话实测 1.54 req/s，未触发 API 限流）
 
+**本地模型**： Qwen3-4B（vLLM） | Qwen3-1.7B（vLLM） | Bge-reranker-v2-m3（TEI） | nomic-embed-text-v1（ONNX）
 
 
 ## 📊 **核心指标**
